@@ -1,0 +1,88 @@
+syntax = "proto3";
+
+package auction;
+
+option go_package = "/grpc;auction";
+
+// NOTE: This implementation is Leader-Based
+
+// ------ API Service ------ 
+service AuctionService {
+    rpc Bid(BidRequest) returns (BidReply);
+    rpc Result(ResultRequest) returns (ResultReply);
+}
+
+message BidRequest{
+    string bidder_name = 1;
+    int64 auction_id = 2;
+    int64 amount = 3; // Input for the bid
+}
+
+message BidReply{
+    BIDDING_STATUS bidding_status = 1;
+    int64 auction_id = 2;
+    int64 highest_bid = 3;
+    string reason = 4; // Used for logging --> If a bid is too low, the auction is finished etc.
+}
+
+message ResultRequest{
+    int64 auction_id = 1;
+}
+
+message ResultReply{
+    AUCTION_STATUS status = 1;
+    int64 auction_id = 2;
+    int64 current_highest_bid = 3;
+    string auction_winner = 4;
+}
+
+
+enum BIDDING_STATUS {
+    SUCCESS = 0;
+    FAIL = 1;
+    EXCEPTION = 2;
+}
+
+enum AUCTION_STATUS{
+    ONGOING = 0;
+    FINISHED = 1;
+}
+
+
+// ------ Internal Service -------
+
+service ReplicationService{
+    rpc ReplicateBid(ReplicateBidRequest) returns (ReplicateBidReply);
+    rpc SyncState(SyncStateRequest) returns (SyncStateReply);
+}
+
+
+message ReplicateBidRequest{
+    int64 auction_id = 1;
+    string bidder_name = 2;
+    int64 amount = 3;
+    int64 leader_id = 4;
+    int64 sequence_number = 5; // number in the leader's order
+    int64 term = 6; // If the leader crashes and a new leader is needed
+}
+
+message ReplicateBidReply{
+    bool success = 1;
+    string reason = 2; // for wrong sequence, out-of-date leader etc
+    int64 last_applied_sequence = 3; // so the leader knows how far along this follower is
+}
+
+message SyncStateRequest{
+    int64 auction_id = 1;
+    int64 node_id = 2;
+    int64 last_known_sequence = 3;
+    int64 leader_id = 4;
+}
+
+message SyncStateReply{
+    int64 auction_id = 1;
+    int64 highest_bid = 2;
+    string auction_winner = 3; // if finished --> if status = ONGOING it should be an empty string
+    AUCTION_STATUS status = 4;
+    int64 last_sequence = 5; // highest sequence number included in this snapshot
+}
