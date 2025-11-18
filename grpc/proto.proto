@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package auction;
 
-option go_package = "/grpc;auction";
+option go_package = "grpc;auction";
 
 // NOTE: This implementation is Leader-Based
 
