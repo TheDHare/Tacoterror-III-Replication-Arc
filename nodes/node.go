@@ -8,6 +8,9 @@ import (
 	auction "tacoterror/grpc"
 )
 
+var globalLeaderID int64 = 0
+var globalMutex sync.Mutex
+
 type AuctionState struct {
 	AuctionID  int64
 	HighestBid int64
@@ -19,21 +22,38 @@ type AuctionState struct {
 type Node struct {
 	mu sync.Mutex
 
-	ID              int64
+	NodeID          int64
 	IsLeader        bool
+	LeaderID        int64
 	AuctionDuration time.Duration
 
 	Auctions map[int64]*AuctionState
 }
 
-// New node
 func NewNode(id int64, isLeader bool, duration time.Duration) *Node {
-	return &Node{
-		ID:              id,
-		IsLeader:        isLeader,
+	n := &Node{
+		NodeID:          id,
+		IsLeader:        false, // will override below
+		LeaderID:        0,
 		AuctionDuration: duration,
 		Auctions:        make(map[int64]*AuctionState),
 	}
+
+	globalMutex.Lock()
+	defer globalMutex.Unlock()
+
+	// If no leader assigned yet → self becomes leader
+	if globalLeaderID == 0 {
+		globalLeaderID = id
+		n.IsLeader = true
+		n.LeaderID = id
+		return n
+	}
+
+	// If leader already exists → follow it
+	n.IsLeader = false
+	n.LeaderID = globalLeaderID
+	return n
 }
 
 // For bidding
@@ -119,4 +139,5 @@ func (n *Node) HandleResult(ctx context.Context, req *auction.ResultRequest) (*a
 		CurrentHighestBid: a.HighestBid,
 		AuctionWinner:     a.Winner,
 	}, nil
+
 }

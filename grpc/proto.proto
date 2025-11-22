@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package auction;
 
-option go_package = "grpc;auction";
+option go_package = "tacoterror/grpc;auction";
 
 // NOTE: This implementation is Leader-Based
 
@@ -59,11 +59,9 @@ service ReplicationService{
 
 message ReplicateBidRequest{
     int64 auction_id = 1;
-    string bidder_name = 2;
-    int64 amount = 3;
-    int64 leader_id = 4;
-    int64 sequence_number = 5; // number in the leader's order
-    int64 term = 6; // If the leader crashes and a new leader is needed
+    int64 highest_bid = 2;
+    string winner = 3;
+    AUCTION_STATUS status = 4;
 }
 
 message ReplicateBidReply{
