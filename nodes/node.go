@@ -195,3 +195,27 @@ func (n *Node) HandleReplicateBid(ctx context.Context, req *auction.ReplicateBid
 		LastAppliedSequence: a.Sequence,
 	}, nil
 }
+
+func (n *Node) HandleSyncState(ctx context.Context, req *auction.SyncStateRequest) (*auction.SyncStateReply, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	a, ok := n.Auctions[req.AuctionId]
+	if !ok {
+		return &auction.SyncStateReply{
+			AuctionId:     req.AuctionId,
+			HighestBid:    0,
+			AuctionWinner: "",
+			Status:        auction.AUCTION_STATUS_ONGOING,
+			LastSequence:  0,
+		}, nil
+	}
+
+	return &auction.SyncStateReply{
+		AuctionId:     a.AuctionID,
+		HighestBid:    a.HighestBid,
+		AuctionWinner: a.Winner,
+		Status:        a.Status,
+		LastSequence:  a.Sequence,
+	}, nil
+}
