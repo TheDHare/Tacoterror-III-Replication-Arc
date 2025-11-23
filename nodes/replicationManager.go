@@ -62,6 +62,7 @@ func (rm *ReplicationManager) sendReplicateBid(addr string, a *AuctionState) {
 		HighestBid: a.HighestBid,
 		Winner:     a.Winner,
 		Status:     a.Status,
+		Sequence:   a.Sequence,
 	})
 	if err != nil {
 		log.Printf("[RM] ReplicateBid to %s failed: %v", addr, err)
@@ -130,6 +131,7 @@ func (rm *ReplicationManager) SyncAuctionFromLeader(ctx context.Context, auction
 	a.HighestBid = resp.HighestBid
 	a.Winner = resp.AuctionWinner
 	a.Status = resp.Status
+	a.Sequence = resp.LastSequence
 
 	return nil
 

@@ -17,6 +17,7 @@ type AuctionState struct {
 	Winner     string
 	Status     auction.AUCTION_STATUS // Maps to auction.AUCTION_STATUS
 	EndTime    time.Time              // For determining an end to an auction
+	Sequence   int64                  // For replication ordering
 }
 
 type Node struct {
@@ -28,6 +29,10 @@ type Node struct {
 	AuctionDuration time.Duration
 
 	Auctions map[int64]*AuctionState
+
+	//For replication
+	LastSequence   int64
+	ReplicationMgr *ReplicationManager
 }
 
 func NewNode(id int64, isLeader bool, duration time.Duration) *Node {
@@ -37,6 +42,7 @@ func NewNode(id int64, isLeader bool, duration time.Duration) *Node {
 		LeaderID:        0,
 		AuctionDuration: duration,
 		Auctions:        make(map[int64]*AuctionState),
+		LastSequence:    0,
 	}
 
 	globalMutex.Lock()
@@ -70,6 +76,7 @@ func (n *Node) HandleBid(ctx context.Context, req *auction.BidRequest) (*auction
 			Winner:     "",
 			Status:     auction.AUCTION_STATUS_ONGOING,
 			EndTime:    time.Now().Add(n.AuctionDuration),
+			Sequence:   0,
 		}
 		n.Auctions[req.AuctionId] = a
 	}
@@ -98,6 +105,10 @@ func (n *Node) HandleBid(ctx context.Context, req *auction.BidRequest) (*auction
 			Reason:        "bid too low",
 		}, nil
 	}
+
+	// Update sequence number
+	n.LastSequence++
+	a.Sequence = n.LastSequence
 
 	// Accept bid
 	a.HighestBid = req.Amount
@@ -140,4 +151,47 @@ func (n *Node) HandleResult(ctx context.Context, req *auction.ResultRequest) (*a
 		AuctionWinner:     a.Winner,
 	}, nil
 
+}
+
+func (n *Node) HandleReplicateBid(ctx context.Context, req *auction.ReplicateBidRequest) (*auction.ReplicateBidReply, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	a, ok := n.Auctions[req.AuctionId]
+	if !ok {
+		// First time we see this auction id, create it
+		a = &AuctionState{
+			AuctionID:  req.AuctionId,
+			HighestBid: 0,
+			Winner:     "",
+			Status:     auction.AUCTION_STATUS_ONGOING,
+			EndTime:    time.Now().Add(n.AuctionDuration),
+			Sequence:   0,
+		}
+		n.Auctions[req.AuctionId] = a
+	}
+
+	if req.Sequence <= a.Sequence {
+		// Outdated replication request
+		return &auction.ReplicateBidReply{
+			Success:             false, //Might need to be true?
+			Reason:              "outdated sequence",
+			LastAppliedSequence: a.Sequence,
+		}, nil
+	}
+
+	a.HighestBid = req.HighestBid
+	a.Winner = req.Winner
+	a.Status = req.Status
+	a.Sequence = req.Sequence
+
+	if req.Sequence > n.LastSequence {
+		n.LastSequence = req.Sequence
+	}
+
+	return &auction.ReplicateBidReply{
+		Success:             true,
+		Reason:              "replicated",
+		LastAppliedSequence: a.Sequence,
+	}, nil
 }

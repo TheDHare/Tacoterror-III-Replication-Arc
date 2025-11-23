@@ -362,6 +362,7 @@ type ReplicateBidRequest struct {
 	HighestBid    int64                  `protobuf:"varint,2,opt,name=highest_bid,json=highestBid,proto3" json:"highest_bid,omitempty"`
 	Winner        string                 `protobuf:"bytes,3,opt,name=winner,proto3" json:"winner,omitempty"`
 	Status        AUCTION_STATUS         `protobuf:"varint,4,opt,name=status,proto3,enum=auction.AUCTION_STATUS" json:"status,omitempty"`
+	Sequence      int64                  `protobuf:"varint,5,opt,name=sequence,proto3" json:"sequence,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -422,6 +423,13 @@ func (x *ReplicateBidRequest) GetStatus() AUCTION_STATUS {
 		return x.Status
 	}
 	return AUCTION_STATUS_ONGOING
+}
+
+func (x *ReplicateBidRequest) GetSequence() int64 {
+	if x != nil {
+		return x.Sequence
+	}
+	return 0
 }
 
 type ReplicateBidReply struct {
@@ -655,14 +663,15 @@ const file_grpc_proto_proto_rawDesc = "" +
 	"\n" +
 	"auction_id\x18\x02 \x01(\x03R\tauctionId\x12.\n" +
 	"\x13current_highest_bid\x18\x03 \x01(\x03R\x11currentHighestBid\x12%\n" +
-	"\x0eauction_winner\x18\x04 \x01(\tR\rauctionWinner\"\x9e\x01\n" +
+	"\x0eauction_winner\x18\x04 \x01(\tR\rauctionWinner\"\xba\x01\n" +
 	"\x13ReplicateBidRequest\x12\x1d\n" +
 	"\n" +
 	"auction_id\x18\x01 \x01(\x03R\tauctionId\x12\x1f\n" +
 	"\vhighest_bid\x18\x02 \x01(\x03R\n" +
 	"highestBid\x12\x16\n" +
 	"\x06winner\x18\x03 \x01(\tR\x06winner\x12/\n" +
-	"\x06status\x18\x04 \x01(\x0e2\x17.auction.AUCTION_STATUSR\x06status\"y\n" +
+	"\x06status\x18\x04 \x01(\x0e2\x17.auction.AUCTION_STATUSR\x06status\x12\x1a\n" +
+	"\bsequence\x18\x05 \x01(\x03R\bsequence\"y\n" +
 	"\x11ReplicateBidReply\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\x122\n" +

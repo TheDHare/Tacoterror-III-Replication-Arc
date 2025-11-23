@@ -62,6 +62,7 @@ message ReplicateBidRequest{
     int64 highest_bid = 2;
     string winner = 3;
     AUCTION_STATUS status = 4;
+    int64 sequence = 5;
 }
 
 message ReplicateBidReply{
