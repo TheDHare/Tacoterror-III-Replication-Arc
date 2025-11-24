@@ -35,7 +35,7 @@ type Node struct {
 	ReplicationMgr *ReplicationManager
 }
 
-func NewNode(id int64, isLeader bool, duration time.Duration) *Node {
+func NewNode(id int64, duration time.Duration) *Node {
 	n := &Node{
 		NodeID:          id,
 		IsLeader:        false, // will override below
@@ -48,18 +48,11 @@ func NewNode(id int64, isLeader bool, duration time.Duration) *Node {
 	globalMutex.Lock()
 	defer globalMutex.Unlock()
 
-	// If no leader assigned yet → self becomes leader
-	if globalLeaderID == 0 {
-		globalLeaderID = id
-		n.IsLeader = true
-		n.LeaderID = id
-		return n
-	}
-
-	// If leader already exists → follow it
+	// do NOT pick leader here — main.go decides that
 	n.IsLeader = false
-	n.LeaderID = globalLeaderID
+	n.LeaderID = 0
 	return n
+
 }
 
 // For bidding

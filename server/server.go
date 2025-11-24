@@ -30,10 +30,8 @@ func (s *AuctionServer) Result(ctx context.Context, req *auction.ResultRequest) 
 // Internal replication RPCs
 func (s *AuctionServer) ReplicateBid(ctx context.Context, req *auction.ReplicateBidRequest) (*auction.ReplicateBidReply, error) {
 	// call s.node.HandleReplicateBid(...) here later
-	return &auction.ReplicateBidReply{
-		Success: false,
-		Reason:  "replication not implemented yet",
-	}, nil
+	return s.node.HandleReplicateBid(ctx, req)
+
 }
 
 func (s *AuctionServer) SyncState(ctx context.Context, req *auction.SyncStateRequest) (*auction.SyncStateReply, error) {

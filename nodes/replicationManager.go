@@ -57,17 +57,24 @@ func (rm *ReplicationManager) sendReplicateBid(addr string, a *AuctionState) {
 
 	client := auction.NewReplicationServiceClient(conn)
 
-	_, err = client.ReplicateBid(ctx, &auction.ReplicateBidRequest{
+	resp, err := client.ReplicateBid(ctx, &auction.ReplicateBidRequest{
 		AuctionId:  a.AuctionID,
 		HighestBid: a.HighestBid,
 		Winner:     a.Winner,
 		Status:     a.Status,
 		Sequence:   a.Sequence,
 	})
+
 	if err != nil {
 		log.Printf("[RM] ReplicateBid to %s failed: %v", addr, err)
 		return
 	}
+
+	if !resp.Success {
+		log.Printf("[RM] Follower %s rejected replication: %s (last=%d)",
+			addr, resp.Reason, resp.LastAppliedSequence)
+	}
+
 }
 
 // ----------------------
