@@ -153,6 +153,10 @@ func (n *Node) HandleResult(ctx context.Context, req *auction.ResultRequest) (*a
 
 }
 
+// ----------------------
+// Replication shit :D
+// ----------------------
+
 func (n *Node) HandleReplicateBid(ctx context.Context, req *auction.ReplicateBidRequest) (*auction.ReplicateBidReply, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -202,6 +206,7 @@ func (n *Node) HandleSyncState(ctx context.Context, req *auction.SyncStateReques
 
 	a, ok := n.Auctions[req.AuctionId]
 	if !ok {
+		//if things not seen before make empty stateReply
 		return &auction.SyncStateReply{
 			AuctionId:     req.AuctionId,
 			HighestBid:    0,
