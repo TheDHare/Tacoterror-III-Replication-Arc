@@ -6,20 +6,32 @@ import (
 	"time"
 
 	auction "tacoterror/grpc"
+
+	"google.golang.org/grpc"
 )
 
-var globalLeaderID int64 = 0
-var globalMutex sync.Mutex
-
+/*
+AuctionState represents the replicated state of a single auction,
+including highest bid, winner, current status, timeout, and
+a monotonically increasing sequence number used for ordering
+replication updates.
+*/
 type AuctionState struct {
 	AuctionID  int64
 	HighestBid int64
 	Winner     string
-	Status     auction.AUCTION_STATUS // Maps to auction.AUCTION_STATUS
-	EndTime    time.Time              // For determining an end to an auction
-	Sequence   int64                  // For replication ordering
+	Status     auction.AUCTION_STATUS
+	EndTime    time.Time
+	Sequence   int64
 }
 
+/*
+Node represents a single process in the distributed auction system.
+Nodes can operate either as leaders or followers. Leaders accept
+client write operations, apply them locally, and replicate the new
+state to all followers. Followers forward write operations to the
+current leader and only update state through replication.
+*/
 type Node struct {
 	mu sync.Mutex
 
@@ -28,58 +40,59 @@ type Node struct {
 	LeaderID        int64
 	AuctionDuration time.Duration
 
-	Auctions map[int64]*AuctionState
+	ListenAddr string
+	Auctions   map[int64]*AuctionState
 
-	//For replication
 	LastSequence   int64
 	ReplicationMgr *ReplicationManager
 }
 
+/*
+NewNode constructs a new node with the given identifier and auction
+duration. Its leader/follower role is decided externally (main.go).
+*/
 func NewNode(id int64, duration time.Duration) *Node {
-	n := &Node{
+	return &Node{
 		NodeID:          id,
-		IsLeader:        false, // will override below
+		IsLeader:        false,
 		LeaderID:        0,
 		AuctionDuration: duration,
 		Auctions:        make(map[int64]*AuctionState),
 		LastSequence:    0,
 	}
-
-	globalMutex.Lock()
-	defer globalMutex.Unlock()
-
-	// do NOT pick leader here — main.go decides that
-	n.IsLeader = false
-	n.LeaderID = 0
-	return n
-
 }
 
-// For bidding
+/*
+HandleBid processes a client request to place a bid.
+  - Followers forward the bid to the leader.
+  - Leaders validate and apply the bid, increasing the sequence number,
+    and then replicate the updated state to followers.
+*/
 func (n *Node) HandleBid(ctx context.Context, req *auction.BidRequest) (*auction.BidReply, error) {
+	if !n.IsLeader {
+		return n.forwardBidToLeader(ctx, req)
+	}
+
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	a, ok := n.Auctions[req.AuctionId]
-	if !ok {
-		// First time we see this auction id, create it
+	a, exists := n.Auctions[req.AuctionId]
+	if !exists {
 		a = &AuctionState{
 			AuctionID:  req.AuctionId,
-			HighestBid: 0,
-			Winner:     "",
 			Status:     auction.AUCTION_STATUS_ONGOING,
 			EndTime:    time.Now().Add(n.AuctionDuration),
 			Sequence:   0,
+			HighestBid: 0,
+			Winner:     "",
 		}
 		n.Auctions[req.AuctionId] = a
 	}
 
-	// check if auction has timed out
 	if time.Now().After(a.EndTime) && a.Status == auction.AUCTION_STATUS_ONGOING {
 		a.Status = auction.AUCTION_STATUS_FINISHED
 	}
 
-	// Reject bid if auction is finished
 	if a.Status == auction.AUCTION_STATUS_FINISHED {
 		return &auction.BidReply{
 			BiddingStatus: auction.BIDDING_STATUS_FAIL,
@@ -89,7 +102,6 @@ func (n *Node) HandleBid(ctx context.Context, req *auction.BidRequest) (*auction
 		}, nil
 	}
 
-	// Reject bid if it is lower than current highest bid
 	if req.Amount <= a.HighestBid {
 		return &auction.BidReply{
 			BiddingStatus: auction.BIDDING_STATUS_FAIL,
@@ -99,13 +111,12 @@ func (n *Node) HandleBid(ctx context.Context, req *auction.BidRequest) (*auction
 		}, nil
 	}
 
-	// Update sequence number
 	n.LastSequence++
 	a.Sequence = n.LastSequence
-
-	// Accept bid
 	a.HighestBid = req.Amount
 	a.Winner = req.BidderName
+
+	n.ReplicationMgr.ReplicateAuctionState(a)
 
 	return &auction.BidReply{
 		BiddingStatus: auction.BIDDING_STATUS_SUCCESS,
@@ -115,14 +126,37 @@ func (n *Node) HandleBid(ctx context.Context, req *auction.BidRequest) (*auction
 	}, nil
 }
 
-// Result
+/*
+forwardBidToLeader sends a bid request to the leader when this node
+is operating as a follower. The leader processes the bid and returns
+the authoritative response.
+*/
+func (n *Node) forwardBidToLeader(ctx context.Context, req *auction.BidRequest) (*auction.BidReply, error) {
+	conn, err := grpc.DialContext(ctx, n.ReplicationMgr.LeaderAddr(), grpc.WithInsecure(), grpc.WithBlock())
+	if err != nil {
+		return &auction.BidReply{
+			BiddingStatus: auction.BIDDING_STATUS_FAIL,
+			AuctionId:     req.AuctionId,
+			HighestBid:    0,
+			Reason:        "leader unreachable",
+		}, nil
+	}
+	defer conn.Close()
+
+	client := auction.NewAuctionServiceClient(conn)
+	return client.Bid(ctx, req)
+}
+
+/*
+HandleResult returns the current observable state of an auction,
+whether the auction is ongoing or finished.
+*/
 func (n *Node) HandleResult(ctx context.Context, req *auction.ResultRequest) (*auction.ResultReply, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	a, ok := n.Auctions[req.AuctionId]
-	if !ok {
-		// If we've never seen the auction id, treat as empty ongoing
+	a, exists := n.Auctions[req.AuctionId]
+	if !exists {
 		return &auction.ResultReply{
 			Status:            auction.AUCTION_STATUS_ONGOING,
 			AuctionId:         req.AuctionId,
@@ -131,47 +165,39 @@ func (n *Node) HandleResult(ctx context.Context, req *auction.ResultRequest) (*a
 		}, nil
 	}
 
-	// Auto-finish on read if time passed but no one has bid since
 	if time.Now().After(a.EndTime) && a.Status == auction.AUCTION_STATUS_ONGOING {
 		a.Status = auction.AUCTION_STATUS_FINISHED
 	}
 
-	// If the auction exists, return what is stored
 	return &auction.ResultReply{
-		Status:            auction.AUCTION_STATUS(a.Status),
+		Status:            a.Status,
 		AuctionId:         a.AuctionID,
 		CurrentHighestBid: a.HighestBid,
 		AuctionWinner:     a.Winner,
 	}, nil
-
 }
 
-// ----------------------
-// Replication shit :D
-// ----------------------
-
+/*
+HandleReplicateBid applies a state update received from the leader.
+Sequence numbers ensure ordering and idempotency. Followers never
+modify auction state outside replication.
+*/
 func (n *Node) HandleReplicateBid(ctx context.Context, req *auction.ReplicateBidRequest) (*auction.ReplicateBidReply, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	a, ok := n.Auctions[req.AuctionId]
-	if !ok {
-		// First time we see this auction id, create it
+	a, exists := n.Auctions[req.AuctionId]
+	if !exists {
 		a = &AuctionState{
-			AuctionID:  req.AuctionId,
-			HighestBid: 0,
-			Winner:     "",
-			Status:     auction.AUCTION_STATUS_ONGOING,
-			EndTime:    time.Now().Add(n.AuctionDuration),
-			Sequence:   0,
+			AuctionID: req.AuctionId,
+			EndTime:   time.Now().Add(n.AuctionDuration),
 		}
 		n.Auctions[req.AuctionId] = a
 	}
 
 	if req.Sequence <= a.Sequence {
-		// Outdated replication request
 		return &auction.ReplicateBidReply{
-			Success:             false, //Might need to be true?
+			Success:             false,
 			Reason:              "outdated sequence",
 			LastAppliedSequence: a.Sequence,
 		}, nil
@@ -193,13 +219,16 @@ func (n *Node) HandleReplicateBid(ctx context.Context, req *auction.ReplicateBid
 	}, nil
 }
 
+/*
+HandleSyncState returns the authoritative auction state to a follower
+performing recovery or late-join synchronization.
+*/
 func (n *Node) HandleSyncState(ctx context.Context, req *auction.SyncStateRequest) (*auction.SyncStateReply, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	a, ok := n.Auctions[req.AuctionId]
-	if !ok {
-		//if things not seen before make empty stateReply
+	a, exists := n.Auctions[req.AuctionId]
+	if !exists {
 		return &auction.SyncStateReply{
 			AuctionId:     req.AuctionId,
 			HighestBid:    0,
@@ -216,4 +245,18 @@ func (n *Node) HandleSyncState(ctx context.Context, req *auction.SyncStateReques
 		Status:        a.Status,
 		LastSequence:  a.Sequence,
 	}, nil
+}
+
+/*
+SyncAllAuctionsFromLeader performs recovery by requesting the latest
+state for every known auction from the current leader.
+*/
+func (n *Node) SyncAllAuctionsFromLeader() {
+	if n.ReplicationMgr.LeaderAddr() == "" {
+		return
+	}
+
+	for id := range n.Auctions {
+		_ = n.ReplicationMgr.SyncAuctionFromLeader(context.Background(), id)
+	}
 }

@@ -2,7 +2,11 @@ package nodes
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"net"
+	"strconv"
+	"strings"
 	"time"
 
 	auction "tacoterror/grpc"
@@ -10,40 +14,52 @@ import (
 	"google.golang.org/grpc"
 )
 
+// ReplicationManager manages bid replication between leader and followers,
+// maintains leader addresses, and implements failure detection and leader promotion.
 type ReplicationManager struct {
-	node *Node
-
+	node          *Node
 	followerAddrs []string
 	leaderAddr    string
+	canBeLeader   bool
 }
 
+// NewReplicationManager returns a new replication manager bound to a node.
 func NewReplicationManager(n *Node) *ReplicationManager {
 	return &ReplicationManager{node: n}
 }
 
+// SetFollowers registers follower nodes for replication (used when this node is leader).
 func (rm *ReplicationManager) SetFollowers(addrs []string) {
 	rm.followerAddrs = addrs
 }
 
+// nodeAddress returns the gRPC listen address of this node.
+func (rm *ReplicationManager) nodeAddress() string {
+	return rm.node.ListenAddr
+}
+
+// SetLeader assigns a leader address for this follower.
 func (rm *ReplicationManager) SetLeader(addr string) {
 	rm.leaderAddr = addr
 }
 
-// ----------------------
-// Leader → Followers
-// ----------------------
+// LeaderAddr returns the current leader's address.
+func (rm *ReplicationManager) LeaderAddr() string {
+	return rm.leaderAddr
+}
 
+// ReplicateAuctionState sends a replicated auction state update from leader to all followers.
 func (rm *ReplicationManager) ReplicateAuctionState(a *AuctionState) {
 	if !rm.node.IsLeader {
 		return
 	}
-
 	for _, addr := range rm.followerAddrs {
 		faddr := addr
 		go rm.sendReplicateBid(faddr, a)
 	}
 }
 
+// sendReplicateBid delivers a replication message to a follower node.
 func (rm *ReplicationManager) sendReplicateBid(addr string, a *AuctionState) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
@@ -56,7 +72,6 @@ func (rm *ReplicationManager) sendReplicateBid(addr string, a *AuctionState) {
 	defer conn.Close()
 
 	client := auction.NewReplicationServiceClient(conn)
-
 	resp, err := client.ReplicateBid(ctx, &auction.ReplicateBidRequest{
 		AuctionId:  a.AuctionID,
 		HighestBid: a.HighestBid,
@@ -74,13 +89,9 @@ func (rm *ReplicationManager) sendReplicateBid(addr string, a *AuctionState) {
 		log.Printf("[RM] Follower %s rejected replication: %s (last=%d)",
 			addr, resp.Reason, resp.LastAppliedSequence)
 	}
-
 }
 
-// ----------------------
-// Followers apply state
-// ----------------------
-
+// ApplyReplicatedBid is a legacy helper for applying state locally (not used anymore).
 func (rm *ReplicationManager) ApplyReplicatedBid(req *auction.ReplicateBidRequest) {
 	rm.node.mu.Lock()
 	defer rm.node.mu.Unlock()
@@ -99,10 +110,7 @@ func (rm *ReplicationManager) ApplyReplicatedBid(req *auction.ReplicateBidReques
 	a.Status = req.Status
 }
 
-// ----------------------
-// Follower → Leader Sync
-// ----------------------
-
+// SyncAuctionFromLeader pulls state for a given auction ID from the leader.
 func (rm *ReplicationManager) SyncAuctionFromLeader(ctx context.Context, auctionID int64) error {
 	if rm.leaderAddr == "" {
 		return nil
@@ -141,5 +149,132 @@ func (rm *ReplicationManager) SyncAuctionFromLeader(ctx context.Context, auction
 	a.Sequence = resp.LastSequence
 
 	return nil
+}
 
+// SetCanBeLeader enables a follower to auto-promote if the leader fails.
+func (rm *ReplicationManager) SetCanBeLeader(v bool) {
+	rm.canBeLeader = v
+}
+
+// StartLeaderMonitor begins periodic leader heartbeat checks on followers.
+func (rm *ReplicationManager) StartLeaderMonitor() {
+	if rm.leaderAddr == "" || !rm.canBeLeader {
+		return
+	}
+
+	go func() {
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+
+		failures := 0
+
+		for range ticker.C {
+			if rm.node.IsLeader {
+				return
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			conn, err := grpc.DialContext(ctx, rm.leaderAddr, grpc.WithInsecure(), grpc.WithBlock())
+			cancel()
+
+			if err != nil {
+				failures++
+				if failures >= 3 {
+					rm.promoteToLeader()
+					return
+				}
+			} else {
+				failures = 0
+				conn.Close()
+			}
+		}
+	}()
+}
+
+// promoteToLeader elevates this node to leader and notifies peers.
+func (rm *ReplicationManager) promoteToLeader() {
+	rm.node.mu.Lock()
+	if rm.node.IsLeader {
+		rm.node.mu.Unlock()
+		return
+	}
+
+	rm.node.IsLeader = true
+	rm.node.LeaderID = rm.node.NodeID
+	oldLeader := rm.leaderAddr
+	rm.leaderAddr = ""
+	rm.node.mu.Unlock()
+
+	log.Printf("[RM] Node %d promoting itself to LEADER (old leader %s unreachable)",
+		rm.node.NodeID, oldLeader)
+
+	rm.broadcastNewLeader()
+}
+
+// StartLeaderChangeListener listens for TCP leader-change notifications on port+1000.
+func (rm *ReplicationManager) StartLeaderChangeListener(grpcAddr string) {
+	parts := strings.Split(grpcAddr, ":")
+	port := parts[1]
+	p, err := strconv.Atoi(port)
+	if err != nil {
+		log.Fatalf("invalid port %q: %v", port, err)
+	}
+
+	listenerPort := net.JoinHostPort("", strconv.Itoa(1000+p))
+
+	ln, err := net.Listen("tcp", listenerPort)
+	if err != nil {
+		log.Printf("Leader change listener error: %v", err)
+		return
+	}
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				continue
+			}
+			go rm.handleLeaderChangeConn(conn)
+		}
+	}()
+}
+
+// handleLeaderChangeConn processes a received leader-change message.
+func (rm *ReplicationManager) handleLeaderChangeConn(conn net.Conn) {
+	defer conn.Close()
+
+	buf := make([]byte, 256)
+	n, _ := conn.Read(buf)
+	msg := string(buf[:n])
+
+	if strings.HasPrefix(msg, "NEW_LEADER:") {
+		newLeader := strings.TrimPrefix(msg, "NEW_LEADER:")
+		rm.node.IsLeader = false
+		rm.leaderAddr = newLeader
+		log.Printf("[RM] Node %d updated leader to %s", rm.node.NodeID, newLeader)
+	}
+}
+
+// broadcastNewLeader notifies all peers about the newly promoted leader.
+func (rm *ReplicationManager) broadcastNewLeader() {
+	for _, addr := range append(rm.followerAddrs, rm.leaderAddr) {
+		if addr == "" {
+			continue
+		}
+
+		go func(a string) {
+			host, port, _ := net.SplitHostPort(a)
+			p, _ := strconv.Atoi(port)
+			target := net.JoinHostPort(host, fmt.Sprintf("%d", p+1000))
+
+			conn, err := net.Dial("tcp", target)
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+
+			msg := "NEW_LEADER:" + rm.nodeAddress()
+			conn.Write([]byte(msg))
+		}(addr)
+	}
 }
