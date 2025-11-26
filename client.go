@@ -34,6 +34,7 @@ var rrCounter uint64 = 0
 
 // pick node using round robin. If a node is no longer available, remove from cluster.
 func pickNode() string {
+
 	for {
 		i := atomic.AddUint64(&rrCounter, 1)
 		node := clusterNodes[(i-1)%uint64(len(clusterNodes))]
@@ -66,6 +67,8 @@ func pickNode() string {
 // start in terminal
 func main() {
 	reader := bufio.NewReader(os.Stdin)
+
+	pruneDeadNodes()
 
 	fmt.Println("=== Distributed Auction Client ===")
 	fmt.Print("Enter your bidder name: ")
@@ -172,5 +175,26 @@ func main() {
 		default:
 			fmt.Println("Unknown command. Available: bid, result, exit")
 		}
+	}
+}
+
+func pruneDeadNodes() {
+	for i := 0; i < len(clusterNodes); {
+		addr := clusterNodes[i]
+
+		conn, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
+		if err != nil {
+			fmt.Println("Startup: removing unreachable node:", addr)
+			clusterNodes = append(clusterNodes[:i], clusterNodes[i+1:]...)
+			continue
+		}
+
+		conn.Close()
+		i++
+	}
+
+	if len(clusterNodes) == 0 {
+		fmt.Println("No reachable nodes at startup — exiting.")
+		os.Exit(1)
 	}
 }
