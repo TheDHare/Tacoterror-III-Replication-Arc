@@ -62,6 +62,7 @@ func pickNode() string {
 		return node
 	}
 }
+
 // start in terminal
 func main() {
 	reader := bufio.NewReader(os.Stdin)

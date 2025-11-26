@@ -175,8 +175,16 @@ func (rm *ReplicationManager) StartLeaderMonitor() {
 // promoteToLeader elevates this node to leader and notifies peers.
 func (rm *ReplicationManager) promoteToLeader() {
 	rm.node.mu.Lock()
+
 	if rm.node.IsLeader {
 		rm.node.mu.Unlock()
+		return
+	}
+
+	// Prevent multiple followers from promoting simultaneously
+	if !rm.lowestEligibleFollower() {
+		rm.node.mu.Unlock()
+		log.Printf("[RM] Node %d is NOT lowest eligible follower → not promoting", rm.node.NodeID)
 		return
 	}
 
@@ -258,4 +266,48 @@ func (rm *ReplicationManager) broadcastNewLeader() {
 			conn.Write([]byte(msg))
 		}(addr)
 	}
+}
+
+// lowestEligibleFollower checks whether this follower is the lowest-ID node
+// among the followers that are allowed to become leader.
+// Only this follower may promote itself if the leader dies.
+// This prevents multiple concurrent promotions (split-brain).
+func (rm *ReplicationManager) lowestEligibleFollower() bool {
+	myID := rm.node.NodeID
+	lowest := myID
+
+	for _, addr := range rm.followerAddrs {
+		id, err := rm.extractNodeID(addr)
+		if err != nil {
+			continue
+		}
+
+		// Only allow nodes that explicitly opted in for leader inheritance
+		if id < lowest && rm.isEligible(id) {
+			lowest = id
+		}
+	}
+
+	return myID == lowest
+}
+
+// extractNodeID parses the numeric part of the port to derive a node ID.
+// Example: :5003 → NodeID = 3
+func (rm *ReplicationManager) extractNodeID(addr string) (int64, error) {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return 0, err
+	}
+	p, err := strconv.Atoi(port)
+	if err != nil {
+		return 0, err
+	}
+	return int64(p % 1000), nil
+}
+
+// isEligible returns whether a node with this ID is allowed to become leader.
+// Here we assume: every follower that runs with --canBeLeader is eligible.
+func (rm *ReplicationManager) isEligible(id int64) bool {
+
+	return rm.canBeLeader
 }
