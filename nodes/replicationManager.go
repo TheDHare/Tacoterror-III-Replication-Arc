@@ -91,25 +91,6 @@ func (rm *ReplicationManager) sendReplicateBid(addr string, a *AuctionState) {
 	}
 }
 
-// ApplyReplicatedBid is a legacy helper for applying state locally (not used anymore).
-func (rm *ReplicationManager) ApplyReplicatedBid(req *auction.ReplicateBidRequest) {
-	rm.node.mu.Lock()
-	defer rm.node.mu.Unlock()
-
-	a, ok := rm.node.Auctions[req.AuctionId]
-	if !ok {
-		a = &AuctionState{
-			AuctionID: req.AuctionId,
-			EndTime:   time.Now().Add(rm.node.AuctionDuration),
-		}
-		rm.node.Auctions[req.AuctionId] = a
-	}
-
-	a.HighestBid = req.HighestBid
-	a.Winner = req.Winner
-	a.Status = req.Status
-}
-
 // SyncAuctionFromLeader pulls state for a given auction ID from the leader.
 func (rm *ReplicationManager) SyncAuctionFromLeader(ctx context.Context, auctionID int64) error {
 	if rm.leaderAddr == "" {

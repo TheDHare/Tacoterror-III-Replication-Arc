@@ -29,12 +29,10 @@ func (s *AuctionServer) Result(ctx context.Context, req *auction.ResultRequest) 
 
 // Internal replication RPCs
 func (s *AuctionServer) ReplicateBid(ctx context.Context, req *auction.ReplicateBidRequest) (*auction.ReplicateBidReply, error) {
-	// call s.node.HandleReplicateBid(...) here later
 	return s.node.HandleReplicateBid(ctx, req)
 
 }
 
 func (s *AuctionServer) SyncState(ctx context.Context, req *auction.SyncStateRequest) (*auction.SyncStateReply, error) {
-	// call s.node.HandleSyncState(...) here later
-	return &auction.SyncStateReply{}, nil
+	return s.node.HandleSyncState(ctx, req)
 }

@@ -13,10 +13,18 @@ how to run:
 # Regular follower
 3. regular followers: go run main.go --id=3 --addr=:5003 --leader=:5001
 
-# Bids
-sending bit: grpcurl -plaintext -d '{"auctionId":1,"bidderName":"alice","amount":50}' localhost:5002 auction.AuctionService/Bid
 
-Result: grpcurl -plaintext -d '{"auctionId":1}' localhost:5003 auction.AuctionService/Result
+# Client (round robin)
+Start the interactive client:
+go run client.go
+
+The client picks a node automatically from :5001–:5009. more ports can be added in code.
+Dead nodes are removed automatically.
+
+Commands:
+bid <amount>
+result
+exit
 
 # Architecture Overview
 
@@ -37,14 +45,19 @@ Triggers replication when leader accepts a new bid
 
 Keeps sequence numbers to ensure ordering
 
+Handles auction timeout and marks auction as finished
+
+
 bid flow:
 Follower: Bid → forwardBidToLeader → Leader
 Leader:   Bid → update state → ReplicateAuctionState → Followers
 Follower: Apply replication
 
 
+
 ## RM
 Responsibilities:
+
 Leader side:
 
 Maintain follower addresses
@@ -52,6 +65,7 @@ Maintain follower addresses
 Send replication RPCs on every accepted bid
 
 Broadcast new leader after promotion
+
 
 Follower side:
 
@@ -67,6 +81,7 @@ Promote to leader after repeated failures
 
 Inform all nodes when becoming leader
 
+
 Leader failure detection:
 
 Every follower pings leader on a fixed interval
@@ -75,8 +90,9 @@ After repeated failures → promote self to leader
 
 Broadcasts: NEW_LEADER:<address> to all peers
 
-## AuctionServer
 
+
+## AuctionServer
 Responsibilities:
 
 Expose Bid and Result RPCs
@@ -87,8 +103,9 @@ Call the corresponding Node handlers
 
 The server contains no logic; it simply delegates to Node
 
-## main.go
 
+
+## main.go
 Responsibilities:
 
 Parse flags to decide leader/follower role
@@ -106,6 +123,7 @@ Launch follower startup sync
 Start gRPC server
 
 
+
 # Communication flow
 
 Bid request: Client → Any Node → Follower? → Forward to Leader → Apply → Replicate to Followers
@@ -113,8 +131,8 @@ Bid request: Client → Any Node → Follower? → Forward to Leader → Apply �
 Result: Client → Any Node → Return local (possibly replicated) state
 
 Replication: Leader → ReplicateBid → Followers
-            Followers → Apply state → Update Sequence
+             Followers → Apply state → Update Sequence
 
 Inheritance: Follower monitors leader heartbeat
-            Leader fails → follower promotes to leader → broadcasts NEW_LEADER
-            Followers update leaderAddr → continue system
+             Leader fails → follower promotes to leader → broadcasts NEW_LEADER
+             Followers update leaderAddr → continue system
