@@ -4,6 +4,12 @@ Repository for Distributed Systems Mandatory Assignment 5
 
 how to run:
 
+# Getting started
+you need one terminal per node, so a minimum of 1 for the leader, and then additional once for every follower you wish to have.
+When deciding on followers its important to distiquish between followers with the canBeLeader boolean and those without, when only those with can actually be promoted in case of leader failure. When your nodes are active and ready start a terminal for the client, and all further user input will happen in this terminal.
+
+Below is the terminal commands needed for leader, backup followers aka those who can be promoted to leader, regular followers and the client + the avaieble commands in the client.
+
 # Leader
 1. Start the Leader: go run main.go --id=1 --addr=:5001 --replicas=:5002,:5003
 
